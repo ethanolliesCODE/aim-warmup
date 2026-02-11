@@ -241,15 +241,16 @@ function ClickDrill({ duration, onComplete }) {
   const [targets, setTargets] = useState([]);
   const [hits, setHits] = useState(0);
   const [misses, setMisses] = useState(0);
-  const [hitTimes, setHitTimes] = useState([]);
   const [timeLeft, setTimeLeft] = useState(duration);
   const [started, setStarted] = useState(false);
-  const lastSpawnRef = useRef(performance.now());
   const hitsRef = useRef(0);
   const missesRef = useRef(0);
   const hitTimesRef = useRef([]);
+  const lastClickRef = useRef(performance.now());
   const doneRef = useRef(false);
-  const TARGET_COUNT = 10;
+  const idCounter = useRef(0);
+  const hitOrderRef = useRef([]); // tracks order of green dots by id
+  const TARGET_COUNT = 5;
   const TARGET_SIZE = 48;
 
   useEffect(() => {
@@ -272,51 +273,70 @@ function ClickDrill({ duration, onComplete }) {
     }
   }, [timeLeft, started, onComplete]);
 
-  const spawnTargets = useCallback(() => {
-    if (!areaRef.current) return;
+  const randPos = useCallback((existingTargets) => {
+    if (!areaRef.current) return { x: 100, y: 100 };
     const rect = areaRef.current.getBoundingClientRect();
     const pad = 20;
+    let x, y, overlap, attempts = 0;
+    do {
+      x = rand(pad, rect.width - TARGET_SIZE - pad);
+      y = rand(pad, rect.height - TARGET_SIZE - pad);
+      overlap = existingTargets.some(t => Math.hypot(t.x - x, t.y - y) < TARGET_SIZE + 10);
+      attempts++;
+    } while (overlap && attempts < 50);
+    return { x, y };
+  }, []);
+
+  const spawnInitial = useCallback(() => {
+    if (!areaRef.current) return;
     const newTargets = [];
     for (let i = 0; i < TARGET_COUNT; i++) {
-      let x, y, overlap;
-      let attempts = 0;
-      do {
-        x = rand(pad, rect.width - TARGET_SIZE - pad);
-        y = rand(pad, rect.height - TARGET_SIZE - pad);
-        overlap = newTargets.some(t => Math.hypot(t.x - x, t.y - y) < TARGET_SIZE + 10);
-        attempts++;
-      } while (overlap && attempts < 50);
-      newTargets.push({ id: i, x, y, hit: false });
+      const pos = randPos(newTargets);
+      newTargets.push({ id: idCounter.current++, x: pos.x, y: pos.y, hit: false });
     }
-    lastSpawnRef.current = performance.now();
+    hitOrderRef.current = [];
+    lastClickRef.current = performance.now();
     setTargets(newTargets);
-  }, []);
+  }, [randPos]);
 
   const hasSpawnedRef = useRef(false);
   useEffect(() => {
     if (started && areaRef.current && !hasSpawnedRef.current) {
       hasSpawnedRef.current = true;
-      spawnTargets();
+      spawnInitial();
     }
-  }, [started, spawnTargets]);
+  }, [started, spawnInitial]);
 
   const begin = () => { setStarted(true); };
 
   const handleTargetClick = (e, id) => {
     e.stopPropagation();
     if (doneRef.current) return;
+
+    // record hit time
     const now = performance.now();
-    const elapsed = now - lastSpawnRef.current;
-    hitTimesRef.current.push(Math.round(elapsed));
-    setHitTimes([...hitTimesRef.current]);
+    hitTimesRef.current.push(Math.round(now - lastClickRef.current));
+    lastClickRef.current = now;
     hitsRef.current += 1;
     setHits(hitsRef.current);
 
     setTargets(prev => {
       const updated = prev.map(t => t.id === id ? { ...t, hit: true } : t);
+      const newHitOrder = [...hitOrderRef.current, id];
+
       const allHit = updated.every(t => t.hit);
-      if (allHit) setTimeout(spawnTargets, 300);
-      return updated;
+      if (allHit) {
+        // oldest green dot respawns as new red dot
+        const oldestId = newHitOrder[0];
+        const remaining = updated.filter(t => t.id !== oldestId);
+        const pos = randPos(remaining);
+        const newTarget = { id: idCounter.current++, x: pos.x, y: pos.y, hit: false };
+        hitOrderRef.current = newHitOrder.slice(1);
+        return [...remaining, newTarget];
+      } else {
+        hitOrderRef.current = newHitOrder;
+        return updated;
+      }
     });
   };
 
@@ -329,16 +349,16 @@ function ClickDrill({ duration, onComplete }) {
       <div style={{ ...styles.drillArea, cursor: "default" }} onClick={begin}>
         <div style={styles.drillMsg}>
           <p style={styles.drillBigText}>Click Targets</p>
-          <p style={styles.drillSmallText}>Hit all 10 targets. Click to begin.</p>
+          <p style={styles.drillSmallText}>5 dots. Hit them all — oldest resets. Click to begin.</p>
         </div>
       </div>
     );
   }
 
   return (
-    <div ref={areaRef} style={{ ...styles.drillArea, background: "#f0f0f0", cursor: "crosshair", position: "relative" }} onClick={handleMiss}>
-      <div style={{ ...styles.timerBadge, color: "#0a0a0f", background: "rgba(0,0,0,0.06)", padding: "4px 10px", borderRadius: 6 }}>{timeLeft}s</div>
-      <div style={{ position: "absolute", top: 12, left: 16, color: "#333", fontFamily: FONT, fontSize: 13 }}>
+    <div ref={areaRef} style={{ ...styles.drillArea, background: "#0a0a0f", cursor: "crosshair", position: "relative" }} onClick={handleMiss}>
+      <div style={{ ...styles.timerBadge, color: "#00ff88", padding: "4px 10px", borderRadius: 6 }}>{timeLeft}s</div>
+      <div style={{ position: "absolute", top: 12, left: 16, color: "#888", fontFamily: FONT, fontSize: 13 }}>
         Hits: {hits} | Misses: {misses}
       </div>
       {targets.map(t => (
@@ -352,12 +372,12 @@ function ClickDrill({ duration, onComplete }) {
             width: TARGET_SIZE,
             height: TARGET_SIZE,
             borderRadius: "50%",
-            background: t.hit ? "#00cc55" : "#cc2200",
-            border: t.hit ? "3px solid #00ff88" : "3px solid #ff4444",
+            background: t.hit ? "#00cc55" : "#ee3333",
+            border: t.hit ? "3px solid #00ff88" : "3px solid #ff5555",
             cursor: "crosshair",
             transition: "background 0.15s, transform 0.15s, border-color 0.15s",
             transform: t.hit ? "scale(0.85)" : "scale(1)",
-            boxShadow: t.hit ? "0 0 12px rgba(0,255,136,0.4)" : "0 2px 8px rgba(204,34,0,0.3)",
+            boxShadow: t.hit ? "0 0 12px rgba(0,255,136,0.4)" : "0 0 10px rgba(255,50,50,0.4)",
           }}
         />
       ))}
@@ -500,10 +520,10 @@ function ResultsScreen({ results, onRestart }) {
   const click = results.find(r => r.drill === "click");
   const follow = results.find(r => r.drill === "follow");
 
-  const getReactionGrade = (ms) => ms < 200 ? "S" : ms < 250 ? "A" : ms < 300 ? "B" : ms < 400 ? "C" : "D";
-  const getAccuracyGrade = (h, m) => { const pct = h / (h + m) * 100; return pct > 95 ? "S" : pct > 85 ? "A" : pct > 70 ? "B" : pct > 50 ? "C" : "D"; };
-  const getTrackGrade = (pct) => pct > 80 ? "S" : pct > 60 ? "A" : pct > 40 ? "B" : pct > 20 ? "C" : "D";
-  const gradeColor = (g) => g === "S" ? "#00ff88" : g === "A" ? "#66ff99" : g === "B" ? "#ffcc00" : g === "C" ? "#ff8800" : "#ff4444";
+  const getReactionGrade = (ms) => ms === 0 ? "-" : ms < 200 ? "S" : ms < 250 ? "A" : ms < 300 ? "B" : ms < 400 ? "C" : "D";
+  const getAccuracyGrade = (h, m) => { if (h + m === 0) return "-"; const pct = h / (h + m) * 100; return pct > 95 ? "S" : pct > 85 ? "A" : pct > 70 ? "B" : pct > 50 ? "C" : "D"; };
+  const getTrackGrade = (pct) => pct === 0 ? "-" : pct > 80 ? "S" : pct > 60 ? "A" : pct > 40 ? "B" : pct > 20 ? "C" : "D";
+  const gradeColor = (g) => g === "-" ? "#555" : g === "S" ? "#00ff88" : g === "A" ? "#66ff99" : g === "B" ? "#ffcc00" : g === "C" ? "#ff8800" : "#ff4444";
 
   return (
     <div style={{ ...styles.center, gap: 24 }}>
